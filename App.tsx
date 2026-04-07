@@ -196,6 +196,7 @@ const Sidebar = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
             <SidebarLink label="Trending" icon={<TrendingUp className="w-4 h-4" />} onClick={() => go('/discover/trending')} />
             <SidebarLink label="Top Rated" icon={<Award className="w-4 h-4" />} onClick={() => go('/discover/top-rated')} />
             <SidebarLink label="New Releases" icon={<Zap className="w-4 h-4" />} onClick={() => go('/discover/new')} />
+            <SidebarLink label="About" icon={<Info className="w-4 h-4" />} onClick={() => go('/about')} active={location.pathname === '/about'} />
           </nav>
 
           <div className="h-px bg-white/5 mb-4" />
@@ -1310,6 +1311,96 @@ const ProfilePage = () => {
   );
 };
 
+// ─── Page: About ─────────────────────────────────────────────────────────────
+
+const AboutPage = () => (
+  <div className="min-h-screen bg-[#0a0a0a] pb-16">
+    {/* Hero */}
+    <div className="relative py-20 px-4 text-center overflow-hidden border-b border-white/5">
+      <div className="absolute inset-0 bg-gradient-to-b from-brand-500/8 to-transparent pointer-events-none" />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-brand-500/5 rounded-full blur-[100px] pointer-events-none" />
+      <div className="relative z-10 max-w-2xl mx-auto pt-8">
+        <div className="inline-flex items-center gap-2 bg-brand-500/10 border border-brand-500/20 rounded-full px-4 py-1.5 text-xs text-brand-400 font-bold uppercase tracking-widest mb-6">
+          About This Project
+        </div>
+        <h1 className="text-4xl sm:text-5xl font-black text-white mb-4 leading-tight">
+          Movi<span className="text-brand-500">Web</span>
+        </h1>
+        <p className="text-gray-400 text-base leading-relaxed">
+          A free, open movie &amp; TV streaming platform — no ads, no subscriptions, built with love.
+        </p>
+      </div>
+    </div>
+
+    <div className="max-w-3xl mx-auto px-4 py-16 space-y-14">
+      {/* Creator */}
+      <section className="text-center">
+        <h2 className="text-xs font-bold text-gray-500 uppercase tracking-[0.3em] mb-8">Created By</h2>
+        <div className="inline-flex flex-col items-center gap-4 bg-[#141414] border border-white/5 rounded-2xl px-12 py-10 shadow-2xl">
+          <img
+            src="/JaypeeProfile.jpg"
+            alt="Jaypee"
+            className="w-24 h-24 rounded-full object-cover shadow-xl shadow-brand-500/20 border-2 border-brand-500/40"
+          />
+          <div>
+            <h3 className="text-2xl font-black text-white">Jaypee</h3>
+            <p className="text-brand-400 text-sm font-bold mt-1">Web Developer &amp; Designer</p>
+          </div>
+          <p className="text-gray-400 text-sm text-center max-w-sm leading-relaxed">
+            I created this so I can watch movies and shows ads free teehee!
+          </p>
+          <div className="flex items-center gap-2 text-xs text-gray-500 bg-white/5 border border-white/5 rounded-full px-4 py-1.5">
+            <span className="w-2 h-2 rounded-full bg-green-400" /> dpodevmail@gmail.com
+          </div>
+        </div>
+      </section>
+
+      {/* Contributors */}
+      <section className="text-center">
+        <h2 className="text-xs font-bold text-gray-500 uppercase tracking-[0.3em] mb-8">Contributors</h2>
+        <div className="inline-flex flex-col items-center gap-4 bg-[#141414] border border-white/5 rounded-2xl px-12 py-10 shadow-2xl">
+          <div className="w-24 h-24 rounded-full bg-brand-500/20 border-2 border-brand-500/40 flex items-center justify-center text-3xl font-black text-brand-400">
+            LM
+          </div>
+          <div>
+            <h3 className="text-2xl font-black text-white">Lexus Mancera</h3>
+            <p className="text-brand-400 text-sm font-bold mt-1">Web Developer &amp; Bug Hunter</p>
+          </div>
+          <p className="text-gray-400 text-sm text-center max-w-sm leading-relaxed">
+            Dev partner, idea guy, and resident bug hunter. Helps shape the direction of MoviWeb by finding issues, suggesting features, and keeping things honest.
+          </p>
+        </div>
+      </section>
+
+      {/* Tech stack */}
+      <section>
+        <h2 className="text-xs font-bold text-gray-500 uppercase tracking-[0.3em] mb-6 text-center">Built With</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {[
+            { name: 'React 19', desc: 'UI Framework' },
+            { name: 'TypeScript', desc: 'Type Safety' },
+            { name: 'Tailwind CSS', desc: 'Styling' },
+            { name: 'TMDB API', desc: 'Movie & TV Data' },
+            { name: 'Firebase', desc: 'Auth & Watchlist' },
+            { name: 'Videasy', desc: 'Streaming Player' },
+          ].map(t => (
+            <div key={t.name} className="bg-[#141414] border border-white/5 rounded-xl p-4 text-center hover:border-brand-500/20 transition">
+              <p className="text-white font-bold text-sm">{t.name}</p>
+              <p className="text-gray-500 text-xs mt-0.5">{t.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Disclaimer */}
+      <section className="bg-[#141414] border border-white/5 rounded-xl p-6 text-sm text-gray-400 leading-relaxed text-center">
+        <p className="font-bold text-white mb-2">Disclaimer</p>
+        MoviWeb does not host any media files. All content is sourced from third-party providers for personal, non-commercial use. Movie titles, characters, and related media are property of their respective owners.
+      </section>
+    </div>
+  </div>
+);
+
 // ─── App Shell ────────────────────────────────────────────────────────────────
 
 const AppContent = () => {
@@ -1329,6 +1420,7 @@ const AppContent = () => {
         <Route path="/discover/:category" element={<DiscoverPage />} />
         <Route path="/discover/:category/:sub" element={<DiscoverPage />} />
         <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/about" element={<AboutPage />} />
         <Route path="*" element={
           <div className="pt-24 min-h-screen flex items-center justify-center text-gray-500">
             <div className="text-center">

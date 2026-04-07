@@ -128,6 +128,16 @@ export const discoverTV = async (params: Record<string, string>, page = 1) => {
   return data ?? { results: [], total_pages: 0 };
 };
 
+// ─── Trailers ─────────────────────────────────────────────────────────────────
+
+export const getTrailerKey = async (id: number, mediaType: 'movie' | 'tv'): Promise<string | null> => {
+  const endpoint = mediaType === 'movie' ? `/movie/${id}/videos` : `/tv/${id}/videos`;
+  const data = await cachedFetch(`videos-${mediaType}-${id}`, () =>
+    fetchTMDB<{ results: { key: string; site: string; type: string }[] }>(endpoint), 'movie');
+  const trailer = data?.results?.find(v => v.site === 'YouTube' && v.type === 'Trailer');
+  return trailer?.key ?? null;
+};
+
 // ─── Genres ───────────────────────────────────────────────────────────────────
 
 export const getMovieGenres = () =>

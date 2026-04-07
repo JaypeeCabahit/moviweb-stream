@@ -339,36 +339,82 @@ const Navbar = ({ onMenuOpen }: { onMenuOpen: () => void }) => {
 const HeroCarousel = ({ items }: { items: Movie[] }) => {
   const [emblaRef, emblaApi] = useEmblaCarousel({ loop: true }, [Autoplay({ delay: 6000, stopOnInteraction: false })]);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [trailerData, setTrailerData] = useState<{ index: number; key: string } | null>(null);
+  const [trailerReady, setTrailerReady] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
     if (!emblaApi) return;
-    const onSelect = () => setSelectedIndex(emblaApi.selectedScrollSnap());
+    const onSelect = () => {
+      const idx = emblaApi.selectedScrollSnap();
+      setSelectedIndex(idx);
+      setTrailerData(null);
+      setTrailerReady(false);
+      // Resume auto-advance when user manually changes slide
+      (emblaApi.plugins() as any)?.autoplay?.play?.();
+    };
     emblaApi.on('select', onSelect);
     return () => { emblaApi.off('select', onSelect); };
   }, [emblaApi]);
 
+  // Fetch trailer for the current slide
+  useEffect(() => {
+    if (!items.length) return;
+    const item = items[selectedIndex];
+    if (!item) return;
+    const mediaType = tmdb.getMediaType(item);
+    let cancelled = false;
+    (async () => {
+      const key = await tmdb.getTrailerKey(item.id, mediaType);
+      if (!cancelled && key) setTrailerData({ index: selectedIndex, key });
+    })();
+    return () => { cancelled = true; };
+  }, [selectedIndex, items]);
+
+  // Pause auto-advance once trailer is playing
+  useEffect(() => {
+    if (!emblaApi || !trailerReady) return;
+    (emblaApi.plugins() as any)?.autoplay?.stop?.();
+  }, [trailerReady, emblaApi]);
+
   if (!items.length) return <HeroSkeleton />;
+
+  const activeTrailerKey = trailerData?.index === selectedIndex ? trailerData.key : null;
 
   return (
     <div className="relative overflow-hidden" ref={emblaRef}>
       <div className="flex">
-        {items.map((item) => {
+        {items.map((item, i) => {
           const title = tmdb.getTitle(item);
           const type = tmdb.getMediaType(item);
           const year = tmdb.getYear(item);
           const detailPath = `/${type}/${item.id}`;
+          const isActive = i === selectedIndex;
 
           return (
             <div key={item.id} className="flex-[0_0_100%] relative h-[75vh] min-h-[500px]">
-              {/* Backdrop */}
+              {/* Backdrop image — hidden once trailer is ready */}
               {item.backdrop_path && (
                 <img
                   src={backdropUrl(item.backdrop_path)}
                   alt={title}
-                  className="absolute inset-0 w-full h-full object-cover object-top"
+                  className={`absolute inset-0 w-full h-full object-cover object-top transition-opacity duration-1000 ${isActive && trailerReady ? 'opacity-0' : 'opacity-100'}`}
                 />
               )}
+
+              {/* YouTube trailer iframe — only on active slide */}
+              {isActive && activeTrailerKey && (
+                <iframe
+                  key={activeTrailerKey}
+                  className={`absolute inset-0 w-full h-full transition-opacity duration-1000 ${trailerReady ? 'opacity-100' : 'opacity-0'}`}
+                  src={`https://www.youtube.com/embed/${activeTrailerKey}?autoplay=1&mute=1&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3&loop=1&playlist=${activeTrailerKey}&start=5&enablejsapi=1&origin=${window.location.origin}`}
+                  allow="autoplay; encrypted-media"
+                  onLoad={() => setTrailerReady(true)}
+                  style={{ pointerEvents: 'none', border: 'none' }}
+                  title={`${title} trailer`}
+                />
+              )}
+
               {/* Gradient overlays */}
               <div className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/50 to-transparent" />
               <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a0a] via-transparent to-black/30" />

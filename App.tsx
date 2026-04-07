@@ -404,15 +404,31 @@ const HeroCarousel = ({ items }: { items: Movie[] }) => {
 
               {/* YouTube trailer iframe — only on active slide */}
               {isActive && activeTrailerKey && (
-                <iframe
-                  key={activeTrailerKey}
-                  className={`absolute inset-0 w-full h-full transition-opacity duration-1000 ${trailerReady ? 'opacity-100' : 'opacity-0'}`}
-                  src={`https://www.youtube.com/embed/${activeTrailerKey}?autoplay=1&mute=1&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3&loop=1&playlist=${activeTrailerKey}&start=5&enablejsapi=1&origin=${window.location.origin}`}
-                  allow="autoplay; encrypted-media"
-                  onLoad={() => setTrailerReady(true)}
-                  style={{ pointerEvents: 'none', border: 'none' }}
-                  title={`${title} trailer`}
-                />
+                <div
+                  className={`absolute inset-0 overflow-hidden transition-opacity duration-1000 ${trailerReady ? 'opacity-100' : 'opacity-0'}`}
+                  style={{ pointerEvents: 'none', background: '#000' }}
+                >
+                  <iframe
+                    key={activeTrailerKey}
+                    src={`https://www.youtube.com/embed/${activeTrailerKey}?autoplay=1&mute=1&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3&loop=1&playlist=${activeTrailerKey}&start=5&enablejsapi=1&origin=${window.location.origin}`}
+                    allow="autoplay; encrypted-media"
+                    allowFullScreen
+                    onLoad={() => setTrailerReady(true)}
+                    title={`${title} trailer`}
+                    style={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      minWidth: '177.78vh',
+                      minHeight: '56.25vw',
+                      width: '100%',
+                      height: '100vh',
+                      transform: 'translate(-50%, -50%)',
+                      border: 'none',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                </div>
               )}
 
               {/* Gradient overlays */}

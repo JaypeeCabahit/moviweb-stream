@@ -31,7 +31,7 @@ const originalUrl = (path: string | null | undefined) =>
 const logoUrl = (path: string | null | undefined) =>
   path ? `${TMDB_LOGO_BASE}${path}` : '';
 
-const formatRating = (r: number) => r.toFixed(1);
+const formatRating = (r: number) => (r ?? 0).toFixed(1);
 const formatRuntime = (min: number) => {
   if (!min) return '';
   const h = Math.floor(min / 60);
@@ -41,12 +41,15 @@ const formatRuntime = (min: number) => {
 
 // ─── Shared Components ────────────────────────────────────────────────────────
 
-const RatingBadge = ({ rating }: { rating: number }) => (
-  <span className="inline-flex items-center gap-1 text-xs font-semibold text-brand-400">
-    <Star className="w-3 h-3 fill-brand-400" />
-    {formatRating(rating)}
-  </span>
-);
+const RatingBadge = ({ rating }: { rating: number }) => {
+  if (!rating) return null;
+  return (
+    <span className="inline-flex items-center gap-1 text-xs font-semibold text-brand-400">
+      <Star className="w-3 h-3 fill-brand-400" />
+      {formatRating(rating)}
+    </span>
+  );
+};
 
 const MovieCard = ({
   item,

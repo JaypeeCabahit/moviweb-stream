@@ -6,7 +6,7 @@ import {
   type User,
 } from 'firebase/auth';
 import { ref, set, get, remove, onValue } from 'firebase/database';
-import { auth, googleProvider, db } from '../services/firebase';
+import { auth, googleProvider, db, firebaseEnabled } from '../services/firebase';
 import type { WatchlistItem } from '../types';
 
 interface AuthContextValue {
@@ -36,6 +36,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   // Auth state listener
   useEffect(() => {
+    if (!firebaseEnabled || !auth) { setLoading(false); return; }
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setLoading(false);
@@ -45,7 +46,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   // Watchlist listener when user changes
   useEffect(() => {
-    if (!user) { setWatchlist([]); return; }
+    if (!user || !db) { setWatchlist([]); return; }
     const watchlistRef = ref(db, `users/${user.uid}/watchlist`);
     const unsub = onValue(watchlistRef, (snap) => {
       if (!snap.exists()) { setWatchlist([]); return; }
@@ -56,29 +57,31 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [user]);
 
   const signInWithGoogle = useCallback(async () => {
+    if (!auth) return;
     try { await signInWithPopup(auth, googleProvider); } catch (err) { console.error('Sign in error:', err); }
   }, []);
 
   const logout = useCallback(async () => {
+    if (!auth) return;
     try { await signOut(auth); } catch (err) { console.error('Logout error:', err); }
   }, []);
 
   const watchlistKey = (id: number, mediaType: 'movie' | 'tv') => `${mediaType}_${id}`;
 
   const addToWatchlist = useCallback(async (item: WatchlistItem) => {
-    if (!user) return;
+    if (!user || !db) return;
     const itemRef = ref(db, `users/${user.uid}/watchlist/${watchlistKey(item.id, item.mediaType)}`);
     await set(itemRef, item);
   }, [user]);
 
   const removeFromWatchlist = useCallback(async (id: number, mediaType: 'movie' | 'tv') => {
-    if (!user) return;
+    if (!user || !db) return;
     const itemRef = ref(db, `users/${user.uid}/watchlist/${watchlistKey(id, mediaType)}`);
     await remove(itemRef);
   }, [user]);
 
   const updateWatchlistItem = useCallback(async (id: number, mediaType: 'movie' | 'tv', updates: Partial<WatchlistItem>) => {
-    if (!user) return;
+    if (!user || !db) return;
     const key = watchlistKey(id, mediaType);
     const itemRef = ref(db, `users/${user.uid}/watchlist/${key}`);
     const snap = await get(itemRef);

@@ -954,17 +954,6 @@ const TVDetailPage = () => {
             </div>
             <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
               <iframe src={streamUrl} className="absolute inset-0 w-full h-full" allowFullScreen allow="fullscreen; autoplay" title={title} />
-              {/* Ad overlay blockers — covers common ad positions in embed players */}
-              {/* Top banner (skip/close buttons, top leaderboard ads) */}
-              <div className="absolute top-0 left-0 right-0 h-[10%] z-10 pointer-events-none" style={{ background: 'transparent' }} />
-              {/* Bottom banner (bottom leaderboard, play bar ads) */}
-              <div className="absolute bottom-0 left-0 right-0 h-[12%] z-10" style={{ background: 'transparent', pointerEvents: 'none' }} />
-              {/* Top-right corner (close/skip ad buttons, countdown overlays) */}
-              <div className="absolute top-0 right-0 w-[15%] h-[20%] z-10" style={{ background: 'transparent', pointerEvents: 'auto', cursor: 'default' }} />
-              {/* Bottom-right corner (pop-up ads) */}
-              <div className="absolute bottom-0 right-0 w-[20%] h-[20%] z-10" style={{ background: 'transparent', pointerEvents: 'auto', cursor: 'default' }} />
-              {/* Bottom-left corner (pop-up ads) */}
-              <div className="absolute bottom-0 left-0 w-[20%] h-[20%] z-10" style={{ background: 'transparent', pointerEvents: 'auto', cursor: 'default' }} />
             </div>
           </div>
         )}

@@ -953,7 +953,8 @@ const TVDetailPage = () => {
               </div>
             </div>
             <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-              <iframe src={streamUrl} className="absolute inset-0 w-full h-full" allowFullScreen allow="fullscreen; autoplay" title={title} />
+              <iframe src={streamUrl} className="absolute inset-0 w-full h-full" allowFullScreen allow="fullscreen; autoplay" title={title}
+                sandbox="allow-scripts allow-same-origin allow-forms allow-presentation" />
               {/* Ad overlay blockers — covers common ad positions in embed players */}
               {/* Top banner (skip/close buttons, top leaderboard ads) */}
               <div className="absolute top-0 left-0 right-0 h-[10%] z-10 pointer-events-none" style={{ background: 'transparent' }} />

@@ -124,6 +124,18 @@ export interface WatchlistItem {
   progress?: number; // episode number for TV
 }
 
+export interface WatchHistoryItem {
+  id: number;
+  mediaType: 'movie' | 'tv';
+  title: string;
+  posterPath: string | null;
+  rating: number;
+  watchedAt: number;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  episodeTitle?: string;
+}
+
 export interface UserProfile {
   uid: string;
   displayName: string | null;

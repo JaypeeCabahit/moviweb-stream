@@ -6,19 +6,32 @@ import Autoplay from 'embla-carousel-autoplay';
 import {
   BrowserRouter, Routes, Route, Link, useNavigate, useParams, useLocation, useSearchParams,
 } from 'react-router-dom';
+import { confirmPasswordReset, verifyPasswordResetCode } from 'firebase/auth';
 import {
   Search, Home, Tv, Film, Star, Play, Plus, Check, LogIn, LogOut, User,
   Menu, X, ChevronLeft, ChevronRight, Info, Bookmark, Clock, TrendingUp,
-  Award, Calendar, Flame, Zap, Settings, Globe, Heart, Eye,
+  Award, Calendar, Flame, Zap, Settings, Globe, Heart, Eye, EyeOff,
+  Mail, Lock, AlertCircle, Database, Loader2, ShieldCheck, Download,
 } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
+import { auth } from './services/firebase';
 import * as tmdb from './services/tmdbService';
+import { getMovieStream, getTVStream } from './services/movieStreamService';
+import type { ScrapedStream } from './services/movieStreamService';
+import {
+  deleteOfflineVideo,
+  getOfflineVideo,
+  listOfflineVideos,
+  saveOfflineVideoFromFile,
+  saveOfflineVideoFromUrl,
+  type OfflineVideoItem,
+} from './services/offlineLibrary';
 import { TMDB_IMAGE_BASE, TMDB_BACKDROP_BASE, TMDB_ORIGINAL_BASE, TMDB_LOGO_BASE, STREAM_PROVIDERS } from './config/constants';
 import { LazyImage } from './components/LazyImage';
 import {
   CardSkeleton, HeroSkeleton, DetailSkeleton, EpisodeSkeleton, GridSkeleton,
 } from './components/LoadingSkeleton';
-import type { Movie, Episode, SeasonDetail, WatchlistItem } from './types';
+import type { Movie, Episode, SeasonDetail, WatchHistoryItem, WatchlistItem } from './types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -38,6 +51,33 @@ const formatRuntime = (min: number) => {
   const m = min % 60;
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 };
+const formatBytes = (bytes: number) => {
+  if (!bytes) return '0 MB';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** i).toFixed(i < 2 ? 0 : 1)} ${units[i]}`;
+};
+
+const getAuthErrorMessage = (err: unknown) => {
+  const code = typeof err === 'object' && err && 'code' in err ? String((err as { code?: string }).code) : '';
+  const messages: Record<string, string> = {
+    'auth/email-already-in-use': 'That email already has an account.',
+    'auth/invalid-credential': 'Email or password is incorrect.',
+    'auth/invalid-email': 'Enter a valid email address.',
+    'auth/missing-password': 'Enter your password.',
+    'auth/weak-password': 'Use at least 6 characters for your password.',
+    'auth/popup-closed-by-user': 'Sign-in was cancelled.',
+    'auth/expired-action-code': 'This reset link has expired. Request a new one.',
+    'auth/invalid-action-code': 'This reset link is invalid or already used.',
+  };
+  return messages[code] ?? (err instanceof Error ? err.message : 'Something went wrong. Try again.');
+};
+
+const getUserDisplayName = (user: { displayName?: string | null; email?: string | null }) =>
+  user.displayName || user.email || 'MoviWeb User';
+
+const getUserAvatar = (user: { photoURL?: string | null; displayName?: string | null; email?: string | null }) =>
+  user.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user.email || user.displayName || 'MoviWeb')}`;
 
 // ─── Shared Components ────────────────────────────────────────────────────────
 
@@ -211,7 +251,7 @@ const Sidebar = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
               {MOVIE_GENRES.map(g => (
                 <button
                   key={g.id}
-                  onClick={() => go(`/discover/genre/${g.id}?name=${encodeURIComponent(g.name)}`)}
+                  onClick={() => go(`/discover/genre/${g.id}?name=${encodeURIComponent(g.name)}&type=movie`)}
                   className="text-left text-xs text-gray-400 hover:text-brand-400 px-2 py-2 rounded-lg transition truncate hover:bg-white/5"
                 >
                   {g.name}
@@ -227,9 +267,357 @@ const Sidebar = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) 
 
 // ─── Navbar ───────────────────────────────────────────────────────────────────
 
+const AuthPanel = () => {
+  const navigate = useNavigate();
+  const {
+    user, firebaseReady, signInWithEmail, signUpWithEmail, signInWithGoogle, resetPassword,
+  } = useAuth();
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [displayName, setDisplayName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      if (mode === 'signup') {
+        await signUpWithEmail(displayName, email, password);
+      } else {
+        await signInWithEmail(email, password);
+      }
+      navigate('/profile');
+    } catch (err) {
+      setError(getAuthErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendReset = async () => {
+    if (!email.trim()) {
+      setError('Enter your email first.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await resetPassword(email);
+      setNotice('Password reset email sent.');
+    } catch (err) {
+      setError(getAuthErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const googleSignIn = async () => {
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await signInWithGoogle();
+      navigate('/profile');
+    } catch (err) {
+      setError(getAuthErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (user) {
+    return (
+      <div className="w-full max-w-md mx-auto rounded-2xl bg-[#111111] border border-white/10 p-5 sm:p-6 text-center">
+        <img src={getUserAvatar(user)} alt="avatar" className="w-16 h-16 rounded-full object-cover border border-brand-500/30 bg-brand-500/15 mx-auto mb-4" />
+        <h1 className="text-2xl font-black text-white">Signed in</h1>
+        <p className="text-sm text-gray-400 mt-2 truncate">{user.email}</p>
+        <button onClick={() => navigate('/profile')} className="mt-5 w-full h-12 rounded-full bg-brand-500 text-black font-bold">
+          Open Profile
+        </button>
+      </div>
+    );
+  }
+
+  if (!firebaseReady) {
+    return (
+      <div className="w-full max-w-md mx-auto rounded-2xl bg-[#111111] border border-white/10 p-5 sm:p-6">
+        <div className="w-14 h-14 rounded-2xl bg-brand-500/15 border border-brand-500/30 flex items-center justify-center mb-5">
+          <Database className="w-7 h-7 text-brand-400" />
+        </div>
+        <h1 className="text-2xl font-black text-white">Firebase setup needed</h1>
+        <p className="text-sm text-gray-400 mt-2 leading-relaxed">
+          Add your Firebase web app values to `.env`, then enable Email/Password auth and Realtime Database in Firebase.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full max-w-md mx-auto rounded-2xl bg-[#111111] border border-white/10 p-4 sm:p-6 shadow-2xl shadow-black/60">
+      <div className="flex items-center gap-3 mb-5">
+        <div className="w-12 h-12 rounded-2xl bg-brand-500/15 border border-brand-500/30 flex items-center justify-center">
+          <User className="w-6 h-6 text-brand-400" />
+        </div>
+        <div>
+          <h1 className="text-2xl font-black text-white">{mode === 'signin' ? 'Sign in' : 'Create account'}</h1>
+          <p className="text-sm text-gray-500">Sync your watchlist and progress.</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 rounded-full bg-black/30 border border-white/10 p-1 mb-5">
+        <button onClick={() => { setMode('signin'); setError(''); setNotice(''); }} className={`h-10 rounded-full text-sm font-bold transition ${mode === 'signin' ? 'bg-brand-500 text-black' : 'text-gray-400'}`}>
+          Sign in
+        </button>
+        <button onClick={() => { setMode('signup'); setError(''); setNotice(''); }} className={`h-10 rounded-full text-sm font-bold transition ${mode === 'signup' ? 'bg-brand-500 text-black' : 'text-gray-400'}`}>
+          Sign up
+        </button>
+      </div>
+
+      <form onSubmit={submit} className="space-y-3">
+        {mode === 'signup' && (
+          <label className="block">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Name</span>
+            <div className="mt-1 flex items-center gap-3 h-12 rounded-xl bg-black/30 border border-white/10 px-3 focus-within:border-brand-500/60">
+              <User className="w-5 h-5 text-gray-500 flex-shrink-0" />
+              <input value={displayName} onChange={e => setDisplayName(e.target.value)} className="w-full bg-transparent text-white placeholder-gray-600 focus:outline-none text-base" placeholder="Defaults to your email" />
+            </div>
+          </label>
+        )}
+
+        <label className="block">
+          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Email</span>
+          <div className="mt-1 flex items-center gap-3 h-12 rounded-xl bg-black/30 border border-white/10 px-3 focus-within:border-brand-500/60">
+            <Mail className="w-5 h-5 text-gray-500 flex-shrink-0" />
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" className="w-full bg-transparent text-white placeholder-gray-600 focus:outline-none text-base" placeholder="you@example.com" />
+          </div>
+        </label>
+
+        <label className="block">
+          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Password</span>
+          <div className="mt-1 flex items-center gap-3 h-12 rounded-xl bg-black/30 border border-white/10 px-3 focus-within:border-brand-500/60">
+            <Lock className="w-5 h-5 text-gray-500 flex-shrink-0" />
+            <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required minLength={6} autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} className="w-full bg-transparent text-white placeholder-gray-600 focus:outline-none text-base" placeholder="Minimum 6 characters" />
+            <button type="button" onClick={() => setShowPassword(v => !v)} className="text-gray-500 hover:text-white transition" aria-label={showPassword ? 'Hide password' : 'Show password'}>
+              {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+            </button>
+          </div>
+        </label>
+
+        {error && (
+          <div className="flex gap-2 rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-sm text-red-300">
+            <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
+        {notice && <div className="rounded-xl bg-green-500/10 border border-green-500/30 px-3 py-2 text-sm text-green-300">{notice}</div>}
+
+        <button disabled={busy} className="w-full h-12 rounded-full bg-brand-500 hover:bg-brand-400 text-black font-black transition disabled:opacity-60 flex items-center justify-center gap-2">
+          {busy && <Loader2 className="w-5 h-5 animate-spin" />}
+          {mode === 'signin' ? 'Sign in' : 'Create account'}
+        </button>
+      </form>
+
+      <div className="flex items-center gap-3 my-5">
+        <div className="h-px bg-white/10 flex-1" />
+        <span className="text-xs text-gray-600">or</span>
+        <div className="h-px bg-white/10 flex-1" />
+      </div>
+
+      <button onClick={googleSignIn} disabled={busy} className="w-full h-12 rounded-full bg-white/8 hover:bg-white/12 border border-white/10 text-white font-bold transition disabled:opacity-60">
+        Continue with Google
+      </button>
+
+      {mode === 'signin' && (
+        <button onClick={sendReset} disabled={busy} className="mt-4 w-full text-sm text-brand-400 hover:text-brand-300 transition">
+          Forgot password?
+        </button>
+      )}
+    </div>
+  );
+};
+
+const LoginPage = () => (
+  <div className="min-h-screen bg-[#0a0a0a] pt-24 pb-10 px-4">
+    <AuthPanel />
+  </div>
+);
+
+type AuthActionStatus = 'checking' | 'ready' | 'done' | 'error';
+
+const getSafeContinueTarget = (continueUrl: string | null) => {
+  if (!continueUrl || typeof window === 'undefined') return '/login';
+  try {
+    const parsed = new URL(continueUrl, window.location.origin);
+    if (parsed.origin !== window.location.origin) return '/login';
+    return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/login';
+  } catch {
+    return '/login';
+  }
+};
+
+const AuthActionPage = () => {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const mode = searchParams.get('mode');
+  const oobCode = searchParams.get('oobCode');
+  const continueUrl = searchParams.get('continueUrl');
+  const [status, setStatus] = useState<AuthActionStatus>('checking');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    let active = true;
+
+    const checkActionCode = async () => {
+      setMessage('');
+      if (mode !== 'resetPassword') {
+        setStatus('error');
+        setMessage('This account action link is not supported.');
+        return;
+      }
+      if (!auth || !oobCode) {
+        setStatus('error');
+        setMessage('This reset link is missing required details.');
+        return;
+      }
+
+      try {
+        const resetEmail = await verifyPasswordResetCode(auth, oobCode);
+        if (!active) return;
+        setEmail(resetEmail);
+        setStatus('ready');
+      } catch (err) {
+        if (!active) return;
+        setStatus('error');
+        setMessage(getAuthErrorMessage(err));
+      }
+    };
+
+    void checkActionCode();
+    return () => { active = false; };
+  }, [mode, oobCode]);
+
+  const submitReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!auth || !oobCode) return;
+    if (password.length < 6) {
+      setMessage('Use at least 6 characters for your password.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setMessage('Passwords do not match.');
+      return;
+    }
+
+    setBusy(true);
+    setMessage('');
+    try {
+      await confirmPasswordReset(auth, oobCode, password);
+      setStatus('done');
+    } catch (err) {
+      setMessage(getAuthErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const goToSignIn = () => navigate(getSafeContinueTarget(continueUrl), { replace: true });
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] pt-24 pb-10 px-4 flex items-center justify-center">
+      <div className="w-full max-w-md rounded-2xl bg-[#111111] border border-white/10 p-5 sm:p-6 shadow-2xl shadow-black/60">
+        <div className="w-14 h-14 rounded-2xl bg-brand-500/15 border border-brand-500/30 flex items-center justify-center mb-5">
+          {status === 'done' ? <ShieldCheck className="w-7 h-7 text-brand-400" /> : <Lock className="w-7 h-7 text-brand-400" />}
+        </div>
+
+        {status === 'checking' && (
+          <div className="flex items-center gap-3 text-gray-300">
+            <Loader2 className="w-5 h-5 animate-spin text-brand-400" />
+            <span>Checking reset link...</span>
+          </div>
+        )}
+
+        {status === 'ready' && (
+          <>
+            <h1 className="text-2xl font-black text-white">Reset password</h1>
+            <p className="text-sm text-gray-400 mt-2 truncate">{email}</p>
+
+            <form onSubmit={submitReset} className="space-y-3 mt-5">
+              <label className="block">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">New password</span>
+                <div className="mt-1 flex items-center gap-3 h-12 rounded-xl bg-black/30 border border-white/10 px-3 focus-within:border-brand-500/60">
+                  <Lock className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                  <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required minLength={6} autoComplete="new-password" className="w-full bg-transparent text-white placeholder-gray-600 focus:outline-none text-base" placeholder="Minimum 6 characters" />
+                  <button type="button" onClick={() => setShowPassword(v => !v)} className="text-gray-500 hover:text-white transition" aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Confirm password</span>
+                <div className="mt-1 flex items-center gap-3 h-12 rounded-xl bg-black/30 border border-white/10 px-3 focus-within:border-brand-500/60">
+                  <ShieldCheck className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                  <input type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} required minLength={6} autoComplete="new-password" className="w-full bg-transparent text-white placeholder-gray-600 focus:outline-none text-base" placeholder="Repeat password" />
+                </div>
+              </label>
+
+              {message && (
+                <div className="flex gap-2 rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-sm text-red-300">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{message}</span>
+                </div>
+              )}
+
+              <button disabled={busy} className="w-full h-12 rounded-full bg-brand-500 hover:bg-brand-400 text-black font-black transition disabled:opacity-60 flex items-center justify-center gap-2">
+                {busy && <Loader2 className="w-5 h-5 animate-spin" />}
+                Update password
+              </button>
+            </form>
+          </>
+        )}
+
+        {status === 'done' && (
+          <>
+            <h1 className="text-2xl font-black text-white">Password updated</h1>
+            <p className="text-sm text-gray-400 mt-2">You can now sign in with your new password.</p>
+            <button onClick={goToSignIn} className="mt-5 w-full h-12 rounded-full bg-brand-500 hover:bg-brand-400 text-black font-black transition">
+              Sign in
+            </button>
+          </>
+        )}
+
+        {status === 'error' && (
+          <>
+            <h1 className="text-2xl font-black text-white">Reset link problem</h1>
+            <div className="mt-4 flex gap-2 rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-sm text-red-300">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span>{message || 'This reset link could not be opened.'}</span>
+            </div>
+            <button onClick={() => navigate('/login', { replace: true })} className="mt-5 w-full h-12 rounded-full bg-brand-500 hover:bg-brand-400 text-black font-black transition">
+              Back to sign in
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const Navbar = ({ onMenuOpen }: { onMenuOpen: () => void }) => {
   const navigate = useNavigate();
-  const { user, signInWithGoogle, logout } = useAuth();
+  const { user, logout } = useAuth();
   const [query, setQuery] = useState('');
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -256,7 +644,7 @@ const Navbar = ({ onMenuOpen }: { onMenuOpen: () => void }) => {
 
   return (
     <nav className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${scrolled ? 'bg-[#0a0a0a]/95 backdrop-blur-md border-b border-white/5' : 'bg-gradient-to-b from-black/80 to-transparent'}`}>
-      <div className="flex items-center gap-4 px-4 md:px-6 h-16">
+      <div className="flex items-center gap-2 sm:gap-4 px-3 md:px-6 h-16">
         {/* Menu + Logo */}
         <button onClick={onMenuOpen} className="p-2 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition">
           <Menu className="w-5 h-5" />
@@ -264,7 +652,7 @@ const Navbar = ({ onMenuOpen }: { onMenuOpen: () => void }) => {
 
         <Link to="/home" className="flex items-center gap-2 font-bold text-xl text-white flex-shrink-0">
           <Film className="w-6 h-6 text-brand-500" />
-          <span>MoviWeb</span>
+          <span className="hidden min-[390px]:inline">MoviWeb</span>
         </Link>
 
         {/* Quick links */}
@@ -276,7 +664,7 @@ const Navbar = ({ onMenuOpen }: { onMenuOpen: () => void }) => {
         </div>
 
         {/* Search */}
-        <form onSubmit={handleSearch} className="flex-1 max-w-sm ml-auto">
+        <form onSubmit={handleSearch} className="flex-1 max-w-sm ml-auto min-w-0">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
             <input
@@ -297,15 +685,12 @@ const Navbar = ({ onMenuOpen }: { onMenuOpen: () => void }) => {
                 onClick={() => setShowUserMenu(v => !v)}
                 className="flex items-center gap-2 p-1 rounded-full hover:bg-white/10 transition"
               >
-                {user.photoURL
-                  ? <img src={user.photoURL} alt="avatar" className="w-8 h-8 rounded-full object-cover border-2 border-brand-500/50" />
-                  : <div className="w-8 h-8 rounded-full bg-brand-500/20 border-2 border-brand-500/50 flex items-center justify-center"><User className="w-4 h-4 text-brand-400" /></div>
-                }
+                <img src={getUserAvatar(user)} alt="avatar" className="w-8 h-8 rounded-full object-cover border-2 border-brand-500/50 bg-brand-500/20" />
               </button>
               {showUserMenu && (
                 <div className="absolute right-0 top-full mt-2 w-52 bg-[#1a1a1a] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
                   <div className="px-4 py-3 border-b border-white/5">
-                    <p className="text-white text-sm font-semibold truncate">{user.displayName}</p>
+                    <p className="text-white text-sm font-semibold truncate">{getUserDisplayName(user)}</p>
                     <p className="text-gray-500 text-xs truncate">{user.email}</p>
                   </div>
                   <div className="py-1">
@@ -325,10 +710,11 @@ const Navbar = ({ onMenuOpen }: { onMenuOpen: () => void }) => {
             </>
           ) : (
             <button
-              onClick={signInWithGoogle}
-              className="flex items-center gap-2 px-4 py-2 rounded-full bg-brand-500 hover:bg-brand-400 text-black font-semibold text-sm transition"
+              onClick={() => navigate('/login')}
+              className="h-10 w-10 sm:w-auto sm:px-4 flex items-center justify-center gap-2 rounded-full bg-brand-500 hover:bg-brand-400 text-black font-semibold text-sm transition"
+              aria-label="Sign in"
             >
-              <LogIn className="w-4 h-4" /> Sign In
+              <LogIn className="w-4 h-4" /> <span className="hidden sm:inline">Sign In</span>
             </button>
           )}
         </div>
@@ -617,34 +1003,153 @@ const WatchlistButton = ({
   id: number; mediaType: 'movie' | 'tv'; title: string; posterPath: string | null; rating: number;
 }) => {
   const { user, isInWatchlist, addToWatchlist, removeFromWatchlist } = useAuth();
+  const navigate = useNavigate();
   const inList = isInWatchlist(id, mediaType);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
   const toggle = async () => {
     if (!user) return;
-    if (inList) {
-      await removeFromWatchlist(id, mediaType);
-    } else {
-      await addToWatchlist({
-        id, mediaType, title, posterPath, rating,
-        addedAt: Date.now(), status: 'plan_to_watch',
-      });
+    setBusy(true);
+    setError('');
+    try {
+      if (inList) {
+        await removeFromWatchlist(id, mediaType);
+      } else {
+        await addToWatchlist({
+          id, mediaType, title, posterPath, rating,
+          addedAt: Date.now(), status: 'plan_to_watch',
+        });
+      }
+    } catch (err) {
+      console.error('Watchlist update failed:', err);
+      setError('Could not save locally. Try again.');
+    } finally {
+      setBusy(false);
     }
   };
 
-  if (!user) return null;
+  if (!user) {
+    return (
+      <button
+        onClick={() => navigate('/login')}
+        className="flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm transition border bg-white/8 border-white/10 text-white hover:bg-brand-500/10 hover:border-brand-500/30 hover:text-brand-400"
+      >
+        <LogIn className="w-4 h-4" />
+        Sign in to Save
+      </button>
+    );
+  }
 
   return (
+    <div>
     <button
       onClick={toggle}
+      disabled={busy}
       className={`flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm transition border ${
         inList
           ? 'bg-brand-500/20 border-brand-500/50 text-brand-400 hover:bg-red-500/10 hover:border-red-500/50 hover:text-red-400'
           : 'bg-white/8 border-white/10 text-white hover:bg-brand-500/10 hover:border-brand-500/30 hover:text-brand-400'
-      }`}
+      } disabled:opacity-60`}
     >
       {inList ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-      {inList ? 'In Watchlist' : 'Add to Watchlist'}
+      {busy ? 'Saving...' : inList ? 'In Watchlist' : 'Add to Watchlist'}
     </button>
+    {error && <p className="mt-2 max-w-[220px] text-xs text-red-300">{error}</p>}
+    </div>
+  );
+};
+
+// ─── Native HLS Player ───────────────────────────────────────────────────────
+
+const OfflineDownloadButton = ({
+  title,
+  sourceUrl,
+}: {
+  title: string;
+  sourceUrl?: string | null;
+}) => {
+  const navigate = useNavigate();
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [saved, setSaved] = useState(false);
+
+  const saveOffline = async () => {
+    setMessage('');
+    setSaved(false);
+    if (!sourceUrl) {
+      setMessage('This source cannot be saved offline yet.');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await saveOfflineVideoFromUrl(sourceUrl, title);
+      setSaved(true);
+      setMessage('Saved to Downloads.');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Could not save this video offline.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <button
+        onClick={() => void saveOffline()}
+        disabled={busy}
+        className="flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm transition bg-white/8 border border-white/10 text-white hover:bg-white/15 disabled:opacity-60"
+      >
+        {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+        {busy ? 'Saving...' : 'Download'}
+      </button>
+      {message && (
+        <p className={`mt-2 max-w-[260px] text-xs leading-relaxed ${saved ? 'text-green-300' : 'text-yellow-300'}`}>
+          {message}
+          {saved && (
+            <button onClick={() => navigate('/profile#downloads')} className="ml-2 text-brand-400 hover:text-brand-300 underline">
+              Open
+            </button>
+          )}
+        </p>
+      )}
+    </div>
+  );
+};
+
+const NativeVideoPlayer = ({ src, title }: { src: string; title: string }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !src) return;
+    let cleanup: (() => void) | undefined;
+
+    import('hls.js').then(({ default: Hls }) => {
+      if (Hls.isSupported()) {
+        const hls = new Hls({ enableWorker: false });
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+        cleanup = () => hls.destroy();
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src;
+        video.play().catch(() => {});
+      }
+    });
+
+    return () => { cleanup?.(); };
+  }, [src]);
+
+  return (
+    <video
+      ref={videoRef}
+      className="absolute inset-0 w-full h-full bg-black"
+      controls
+      playsInline
+      title={title}
+    />
   );
 };
 
@@ -653,17 +1158,30 @@ const WatchlistButton = ({
 const MovieDetailPage = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { addToWatchHistory } = useAuth();
   const [movie, setMovie] = useState<Movie | null>(null);
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState(false);
+  const [trailerKey, setTrailerKey] = useState<string | null>(null);
   const [providerIdx, setProviderIdx] = useState(0);
+  const [scrapedStream, setScrapedStream] = useState<ScrapedStream | null | 'loading'>(null);
 
   useEffect(() => {
     if (!id) return;
     setLoading(true);
     setPlaying(false);
+    setTrailerKey(null);
+    setScrapedStream(null);
     tmdb.getMovieDetails(Number(id)).then(m => { setMovie(m ?? null); setLoading(false); });
   }, [id]);
+
+  useEffect(() => {
+    if (!playing || !movie || trailerKey) return;
+    const t = tmdb.getTitle(movie);
+    const y = tmdb.getYear(movie) || '';
+    setScrapedStream('loading');
+    getMovieStream(t, y).then(s => setScrapedStream(s));
+  }, [playing, movie?.id, trailerKey]);
 
   if (loading) return <div className="pt-16"><DetailSkeleton /></div>;
   if (!movie) return (
@@ -679,6 +1197,18 @@ const MovieDetailPage = () => {
   const trailer = movie.videos?.results?.find(v => v.type === 'Trailer' && v.site === 'YouTube');
   const provider = STREAM_PROVIDERS[providerIdx];
   const streamUrl = provider.movieUrl(movie.id);
+  const playMovie = () => {
+    setTrailerKey(null);
+    setPlaying(true);
+    void addToWatchHistory({
+      id: movie.id,
+      mediaType: 'movie',
+      title,
+      posterPath: movie.poster_path,
+      rating: movie.vote_average,
+      watchedAt: Date.now(),
+    });
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a]">
@@ -720,7 +1250,7 @@ const MovieDetailPage = () => {
               <div className="flex flex-wrap gap-2 mb-4">
                 {movie.genres.map(g => (
                   <span key={g.id} className="px-3 py-1 rounded-full text-xs font-medium bg-white/5 border border-white/10 text-gray-300 hover:border-brand-500/30 hover:text-brand-400 transition cursor-pointer"
-                    onClick={() => navigate(`/discover/genre/${g.id}?name=${encodeURIComponent(g.name)}`)}>
+                    onClick={() => navigate(`/discover/genre/${g.id}?name=${encodeURIComponent(g.name)}&type=movie`)}>
                     {g.name}
                   </span>
                 ))}
@@ -736,26 +1266,25 @@ const MovieDetailPage = () => {
             {/* Action buttons */}
             <div className="flex flex-wrap gap-3 mb-6">
               <button
-                onClick={() => setPlaying(true)}
+                onClick={playMovie}
                 className="flex items-center gap-2 px-6 py-3 rounded-full bg-brand-500 hover:bg-brand-400 text-black font-bold text-sm transition btn-shimmer btn-shimmer-brand shadow-lg shadow-brand-500/20"
               >
                 <Play className="w-4 h-4 fill-black" /> Play Movie
               </button>
               <WatchlistButton id={movie.id} mediaType="movie" title={title} posterPath={movie.poster_path} rating={movie.vote_average} />
+              <OfflineDownloadButton title={title} sourceUrl={null} />
               {trailer && (
-                <a
-                  href={`https://www.youtube.com/watch?v=${trailer.key}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  onClick={() => { setPlaying(false); setTrailerKey(trailer.key); }}
                   className="flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm transition bg-white/8 border border-white/10 text-white hover:bg-white/15"
                 >
                   Trailer
-                </a>
+                </button>
               )}
             </div>
 
-            {/* Provider selector */}
-            {playing && (
+            {/* Provider selector — only when scraper fallback is active */}
+            {playing && !trailerKey && scrapedStream === null && (
               <div className="flex items-center gap-2 mb-3">
                 <span className="text-gray-500 text-xs">Source:</span>
                 {STREAM_PROVIDERS.map((p, i) => (
@@ -770,20 +1299,36 @@ const MovieDetailPage = () => {
         </div>
 
         {/* Player */}
-        {playing && (
+        {(playing || trailerKey) && (
           <div className="mt-6 rounded-2xl overflow-hidden border border-white/10 shadow-2xl shadow-black/80 bg-black">
             <div className="flex items-center justify-between px-4 py-2 bg-[#141414] border-b border-white/5">
-              <span className="text-white text-sm font-semibold">{title}</span>
-              <button onClick={() => setPlaying(false)} className="text-gray-400 hover:text-white transition"><X className="w-4 h-4" /></button>
+              <div className="flex items-center gap-2">
+                <span className="text-white text-sm font-semibold">{trailerKey ? `${title} Trailer` : title}</span>
+                {!trailerKey && scrapedStream && scrapedStream !== 'loading' && (
+                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">Ad-free</span>
+                )}
+              </div>
+              <button onClick={() => { setPlaying(false); setTrailerKey(null); }} className="text-gray-400 hover:text-white transition"><X className="w-4 h-4" /></button>
             </div>
             <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-              <iframe
-                src={streamUrl}
-                className="absolute inset-0 w-full h-full"
-                allowFullScreen
-                allow="fullscreen; autoplay"
-                title={title}
-              />
+              {trailerKey ? (
+                <iframe src={`https://www.youtube.com/embed/${trailerKey}?autoplay=1&rel=0&modestbranding=1&playsinline=1&origin=${window.location.origin}`} className="absolute inset-0 w-full h-full" allowFullScreen allow="fullscreen; autoplay; encrypted-media; picture-in-picture" title={`${title} trailer`} />
+              ) : (
+                <>
+                  {scrapedStream === 'loading' && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black gap-3">
+                      <div className="w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
+                      <span className="text-gray-400 text-sm">Finding ad-free stream...</span>
+                    </div>
+                  )}
+                  {scrapedStream && scrapedStream !== 'loading' && (
+                    <NativeVideoPlayer src={scrapedStream.url} title={title} />
+                  )}
+                  {scrapedStream === null && (
+                    <iframe src={streamUrl} className="absolute inset-0 w-full h-full" allowFullScreen allow="fullscreen; autoplay" title={title} />
+                  )}
+                </>
+              )}
             </div>
           </div>
         )}
@@ -827,6 +1372,7 @@ const MovieDetailPage = () => {
 const TVDetailPage = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { addToWatchHistory } = useAuth();
   const [show, setShow] = useState<Movie | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedSeason, setSelectedSeason] = useState(1);
@@ -834,13 +1380,17 @@ const TVDetailPage = () => {
   const [seasonLoading, setSeasonLoading] = useState(false);
   const [selectedEp, setSelectedEp] = useState<Episode | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [trailerKey, setTrailerKey] = useState<string | null>(null);
   const [providerIdx, setProviderIdx] = useState(0);
+  const [scrapedStream, setScrapedStream] = useState<ScrapedStream | null | 'loading'>(null);
 
   useEffect(() => {
     if (!id) return;
     setLoading(true);
     setPlaying(false);
+    setTrailerKey(null);
     setSelectedEp(null);
+    setScrapedStream(null);
     tmdb.getTVDetails(Number(id)).then(s => {
       setShow(s ?? null);
       setLoading(false);
@@ -860,6 +1410,16 @@ const TVDetailPage = () => {
     });
   }, [id, selectedSeason]);
 
+  useEffect(() => {
+    if (!playing || !show || trailerKey) return;
+    const t = tmdb.getTitle(show);
+    const y = tmdb.getYear(show) || '';
+    const s = selectedEp?.season_number ?? selectedSeason;
+    const e = selectedEp?.episode_number ?? 1;
+    setScrapedStream('loading');
+    getTVStream(t, y, s, e).then(stream => setScrapedStream(stream));
+  }, [playing, show?.id, selectedEp?.season_number, selectedEp?.episode_number, trailerKey]);
+
   if (loading) return <div className="pt-16"><DetailSkeleton /></div>;
   if (!show) return (
     <div className="pt-16 min-h-screen flex items-center justify-center text-gray-400">
@@ -877,6 +1437,32 @@ const TVDetailPage = () => {
   const streamUrl = selectedEp
     ? provider.tvUrl(show.id, selectedEp.season_number, selectedEp.episode_number)
     : provider.tvUrl(show.id, selectedSeason, 1);
+  const recordTVPlay = (episode?: Episode | null) => {
+    void addToWatchHistory({
+      id: show.id,
+      mediaType: 'tv',
+      title,
+      posterPath: show.poster_path,
+      rating: show.vote_average,
+      watchedAt: Date.now(),
+      seasonNumber: episode?.season_number ?? selectedSeason,
+      episodeNumber: episode?.episode_number ?? 1,
+      episodeTitle: episode?.name,
+    });
+  };
+  const playTV = () => {
+    const firstEpisode = selectedEp ?? seasonData?.episodes?.[0] ?? null;
+    setTrailerKey(null);
+    if (firstEpisode) setSelectedEp(firstEpisode);
+    setPlaying(true);
+    recordTVPlay(firstEpisode);
+  };
+  const playEpisode = (episode: Episode) => {
+    setTrailerKey(null);
+    setSelectedEp(episode);
+    setPlaying(true);
+    recordTVPlay(episode);
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a]">
@@ -910,7 +1496,8 @@ const TVDetailPage = () => {
             {show.genres && (
               <div className="flex flex-wrap gap-2 mb-4">
                 {show.genres.map(g => (
-                  <span key={g.id} className="px-3 py-1 rounded-full text-xs font-medium bg-white/5 border border-white/10 text-gray-300">
+                  <span key={g.id} className="px-3 py-1 rounded-full text-xs font-medium bg-white/5 border border-white/10 text-gray-300 hover:border-brand-500/30 hover:text-brand-400 transition cursor-pointer"
+                    onClick={() => navigate(`/discover/genre/${g.id}?name=${encodeURIComponent(g.name)}&type=tv`)}>
                     {g.name}
                   </span>
                 ))}
@@ -919,41 +1506,61 @@ const TVDetailPage = () => {
             <p className="text-gray-300 text-sm leading-relaxed mb-6 max-w-2xl">{show.overview}</p>
             <div className="flex flex-wrap gap-3 mb-4">
               <button
-                onClick={() => { setPlaying(true); if (!selectedEp && seasonData?.episodes?.[0]) setSelectedEp(seasonData.episodes[0]); }}
+                onClick={playTV}
                 className="flex items-center gap-2 px-6 py-3 rounded-full bg-brand-500 hover:bg-brand-400 text-black font-bold text-sm transition btn-shimmer btn-shimmer-brand shadow-lg shadow-brand-500/20"
               >
                 <Play className="w-4 h-4 fill-black" /> Play
               </button>
               <WatchlistButton id={show.id} mediaType="tv" title={title} posterPath={show.poster_path} rating={show.vote_average} />
+              <OfflineDownloadButton title={title} sourceUrl={null} />
               {trailer && (
-                <a href={`https://www.youtube.com/watch?v=${trailer.key}`} target="_blank" rel="noopener noreferrer"
+                <button onClick={() => { setPlaying(false); setTrailerKey(trailer.key); }}
                   className="flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm transition bg-white/8 border border-white/10 text-white hover:bg-white/15">
                   Trailer
-                </a>
+                </button>
               )}
             </div>
           </div>
         </div>
 
         {/* Player */}
-        {playing && (
+        {(playing || trailerKey) && (
           <div className="mt-6 rounded-2xl overflow-hidden border border-white/10 shadow-2xl shadow-black/80 bg-black">
             <div className="flex items-center justify-between px-4 py-2 bg-[#141414] border-b border-white/5">
-              <span className="text-white text-sm font-semibold">
-                {title} {selectedEp ? `— S${selectedEp.season_number}E${selectedEp.episode_number}: ${selectedEp.name}` : ''}
-              </span>
-              <div className="flex items-center gap-3">
-                {STREAM_PROVIDERS.map((p, i) => (
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-white text-sm font-semibold truncate">
+                  {title} {selectedEp ? `— S${selectedEp.season_number}E${selectedEp.episode_number}: ${selectedEp.name}` : ''}
+                </span>
+                {!trailerKey && scrapedStream && scrapedStream !== 'loading' && (
+                  <span className="flex-shrink-0 px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">Ad-free</span>
+                )}
+              </div>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {!trailerKey && scrapedStream === null && STREAM_PROVIDERS.map((p, i) => (
                   <button key={p.key} onClick={() => setProviderIdx(i)}
                     className={`px-2 py-0.5 rounded text-xs font-medium transition ${i === providerIdx ? 'bg-brand-500/20 text-brand-400' : 'text-gray-400 hover:text-white'}`}>
                     {p.label}
                   </button>
                 ))}
-                <button onClick={() => setPlaying(false)} className="text-gray-400 hover:text-white transition ml-2"><X className="w-4 h-4" /></button>
+                <button onClick={() => { setPlaying(false); setTrailerKey(null); }} className="text-gray-400 hover:text-white transition ml-2"><X className="w-4 h-4" /></button>
               </div>
             </div>
             <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-              <iframe src={streamUrl} className="absolute inset-0 w-full h-full" allowFullScreen allow="fullscreen; autoplay" title={title} />
+              {trailerKey && (
+                <iframe src={`https://www.youtube.com/embed/${trailerKey}?autoplay=1&rel=0&modestbranding=1&playsinline=1&origin=${window.location.origin}`} className="absolute inset-0 w-full h-full" allowFullScreen allow="fullscreen; autoplay; encrypted-media; picture-in-picture" title={`${title} trailer`} />
+              )}
+              {!trailerKey && scrapedStream === 'loading' && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black gap-3">
+                  <div className="w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
+                  <span className="text-gray-400 text-sm">Finding ad-free stream...</span>
+                </div>
+              )}
+              {!trailerKey && scrapedStream && scrapedStream !== 'loading' && (
+                <NativeVideoPlayer src={scrapedStream.url} title={title} />
+              )}
+              {!trailerKey && scrapedStream === null && (
+                <iframe src={streamUrl} className="absolute inset-0 w-full h-full" allowFullScreen allow="fullscreen; autoplay" title={title} />
+              )}
             </div>
           </div>
         )}
@@ -982,7 +1589,7 @@ const TVDetailPage = () => {
                 return (
                   <button
                     key={ep.id}
-                    onClick={() => { setSelectedEp(ep); setPlaying(true); }}
+                    onClick={() => playEpisode(ep)}
                     className={`w-full flex gap-3 p-3 rounded-xl text-left transition border ${
                       isActive
                         ? 'bg-brand-500/10 border-brand-500/40'
@@ -1212,9 +1819,12 @@ const SearchPage = () => {
 // ─── Page: Discover ───────────────────────────────────────────────────────────
 
 const DiscoverPage = () => {
-  const { category } = useParams<{ category: string }>();
-  const [searchParams] = useSearchParams();
+  const { category, sub } = useParams<{ category: string; sub?: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const genreName = searchParams.get('name') ?? '';
+  const typeParam = searchParams.get('type');
+  const genreType: 'movie' | 'tv' = typeParam === 'tv' ? 'tv' : 'movie';
+  const isGenrePage = category === 'genre' && !!sub;
   const navigate = useNavigate();
   const [items, setItems] = useState<Movie[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1225,13 +1835,16 @@ const DiscoverPage = () => {
     if (category === 'trending') return 'Trending Now';
     if (category === 'top-rated') return 'Top Rated';
     if (category === 'new') return 'New Releases';
-    if (category?.startsWith('genre/')) return genreName || 'Genre';
+    if (isGenrePage) return genreName || 'Genre';
     return category ?? 'Discover';
-  }, [category, genreName]);
+  }, [category, genreName, isGenrePage]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [category, sub, genreType]);
 
   useEffect(() => {
     setLoading(true);
-    setPage(1);
     const load = async () => {
       let results: Movie[] = [], tp = 1;
       if (category === 'trending') {
@@ -1243,9 +1856,9 @@ const DiscoverPage = () => {
       } else if (category === 'new') {
         const [m, tv] = await Promise.all([tmdb.getNowPlaying(), tmdb.getAiringToday()]);
         results = [...(m ?? []), ...(tv ?? [])];
-      } else if (category?.startsWith('genre/')) {
-        const genreId = category.replace('genre/', '');
-        const d = await tmdb.discoverMovies({ with_genres: genreId, sort_by: 'popularity.desc' }, 1);
+      } else if (isGenrePage && sub) {
+        const discover = genreType === 'tv' ? tmdb.discoverTV : tmdb.discoverMovies;
+        const d = await discover({ with_genres: sub, sort_by: 'popularity.desc' }, page);
         results = d.results; tp = d.total_pages;
       }
       setItems(results);
@@ -1253,18 +1866,74 @@ const DiscoverPage = () => {
       setLoading(false);
     };
     load();
-  }, [category]);
+  }, [category, sub, genreType, isGenrePage, page]);
 
   const goCard = (item: Movie) => { const type = tmdb.getMediaType(item); navigate(`/${type}/${item.id}`); };
+
+  const pageNums = useMemo(() => {
+    const pages: (number | '...')[] = [];
+    if (totalPages <= 7) { for (let i = 1; i <= totalPages; i++) pages.push(i); return pages; }
+    pages.push(1);
+    if (page > 3) pages.push('...');
+    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
+    if (page < totalPages - 2) pages.push('...');
+    pages.push(totalPages);
+    return pages;
+  }, [page, totalPages]);
+
+  const setGenreType = (type: 'movie' | 'tv') => {
+    if (!sub) return;
+    setSearchParams({ name: genreName, type });
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] pt-24 pb-16 px-4 md:px-6">
       <div className="max-w-7xl mx-auto">
         <h1 className="text-3xl font-bold text-white mb-2">{title}</h1>
+        {isGenrePage && (
+          <div className="flex gap-2 mb-5">
+            {(['movie', 'tv'] as const).map(type => (
+              <button key={type} onClick={() => setGenreType(type)}
+                className={`px-4 py-2 rounded-full text-sm font-medium transition ${genreType === type ? 'bg-brand-500 text-black' : 'bg-white/8 text-gray-400 hover:text-white border border-white/10'}`}>
+                {type === 'movie' ? 'Movies' : 'TV Shows'}
+              </button>
+            ))}
+          </div>
+        )}
         <p className="text-gray-500 text-sm mb-8">{items.length} titles</p>
-        {loading ? <GridSkeleton count={20} /> : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-            {items.map(item => <MovieCard key={`${item.id}-${item.media_type}`} item={item} onClick={goCard} />)}
+        {loading ? <GridSkeleton count={20} /> : items.length > 0 ? (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+              {items.map(item => <MovieCard key={`${item.id}-${item.media_type ?? tmdb.getMediaType(item)}`} item={item} onClick={goCard} />)}
+            </div>
+
+            {totalPages > 1 && (
+              <div className="flex justify-center items-center gap-2 mt-10">
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                  className="w-10 h-10 flex items-center justify-center rounded-full bg-[#1e1e1e] text-gray-400 hover:text-white hover:bg-white/10 transition disabled:opacity-30 disabled:cursor-not-allowed">
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+                {pageNums.map((p, i) => (
+                  <button key={i} onClick={() => typeof p === 'number' && setPage(p)}
+                    disabled={p === '...'}
+                    className={`w-10 h-10 flex items-center justify-center rounded-full text-sm font-bold transition ${
+                      p === page ? 'bg-brand-500 text-black shadow-[0_0_15px_rgba(245,158,11,0.4)]'
+                      : typeof p === 'number' ? 'bg-[#1e1e1e] text-gray-400 hover:text-white hover:bg-white/10'
+                      : 'text-gray-600 cursor-default'
+                    }`}>
+                    {p}
+                  </button>
+                ))}
+                <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                  className="w-10 h-10 flex items-center justify-center rounded-full bg-[#1e1e1e] text-gray-400 hover:text-white hover:bg-white/10 transition disabled:opacity-30 disabled:cursor-not-allowed">
+                  <ChevronRight className="w-5 h-5" />
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] px-5 py-10 text-center text-sm text-gray-400">
+            No titles found for this genre.
           </div>
         )}
       </div>
@@ -1275,21 +1944,96 @@ const DiscoverPage = () => {
 // ─── Page: Profile ────────────────────────────────────────────────────────────
 
 const ProfilePage = () => {
-  const { user, signInWithGoogle, logout, watchlist, removeFromWatchlist, updateWatchlistItem } = useAuth();
+  const {
+    user, logout, watchlist, watchHistory, removeFromWatchlist, updateWatchlistItem,
+    removeFromWatchHistory, clearWatchHistory,
+  } = useAuth();
   const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [offlineItems, setOfflineItems] = useState<OfflineVideoItem[]>([]);
+  const [offlineLoading, setOfflineLoading] = useState(true);
+  const [offlineSaving, setOfflineSaving] = useState(false);
+  const [offlineError, setOfflineError] = useState('');
+  const [directUrl, setDirectUrl] = useState('');
+  const [directTitle, setDirectTitle] = useState('');
+  const [offlinePlayer, setOfflinePlayer] = useState<{ item: OfflineVideoItem; url: string } | null>(null);
+
+  const refreshOfflineItems = useCallback(async () => {
+    setOfflineLoading(true);
+    try {
+      setOfflineItems(await listOfflineVideos());
+      setOfflineError('');
+    } catch (err) {
+      setOfflineError(err instanceof Error ? err.message : 'Could not load offline videos.');
+    } finally {
+      setOfflineLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshOfflineItems();
+  }, [refreshOfflineItems]);
+
+  useEffect(() => () => {
+    if (offlinePlayer?.url) URL.revokeObjectURL(offlinePlayer.url);
+  }, [offlinePlayer?.url]);
+
+  const importOfflineFiles = async (files: FileList | null) => {
+    const videos = Array.from(files ?? []);
+    if (videos.length === 0) return;
+    setOfflineSaving(true);
+    setOfflineError('');
+    try {
+      for (const file of videos) await saveOfflineVideoFromFile(file);
+      await refreshOfflineItems();
+    } catch (err) {
+      setOfflineError(err instanceof Error ? err.message : 'Could not import that video.');
+    } finally {
+      setOfflineSaving(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const saveDirectOfflineUrl = async () => {
+    if (!directUrl.trim()) return;
+    setOfflineSaving(true);
+    setOfflineError('');
+    try {
+      await saveOfflineVideoFromUrl(directUrl, directTitle);
+      setDirectUrl('');
+      setDirectTitle('');
+      await refreshOfflineItems();
+    } catch (err) {
+      setOfflineError(err instanceof Error ? err.message : 'Could not save that video.');
+    } finally {
+      setOfflineSaving(false);
+    }
+  };
+
+  const playOfflineItem = async (item: OfflineVideoItem) => {
+    setOfflineError('');
+    try {
+      const record = await getOfflineVideo(item.id);
+      const url = URL.createObjectURL(record.blob);
+      setOfflinePlayer({ item, url });
+    } catch (err) {
+      setOfflineError(err instanceof Error ? err.message : 'Could not open that offline video.');
+    }
+  };
+
+  const removeOfflineItem = async (item: OfflineVideoItem) => {
+    try {
+      await deleteOfflineVideo(item.id);
+      if (offlinePlayer?.item.id === item.id) setOfflinePlayer(null);
+      await refreshOfflineItems();
+    } catch (err) {
+      setOfflineError(err instanceof Error ? err.message : 'Could not delete that video.');
+    }
+  };
 
   if (!user) return (
-    <div className="min-h-screen bg-[#0a0a0a] pt-24 flex items-center justify-center px-4">
-      <div className="text-center max-w-sm">
-        <div className="w-20 h-20 rounded-full bg-brand-500/10 border border-brand-500/20 flex items-center justify-center mx-auto mb-6">
-          <User className="w-10 h-10 text-brand-400" />
-        </div>
-        <h2 className="text-white font-bold text-2xl mb-2">Sign in to track your watchlist</h2>
-        <p className="text-gray-500 text-sm mb-6">Save movies and shows to watch later, track what you've seen, and more.</p>
-        <button onClick={signInWithGoogle} className="flex items-center gap-2 px-6 py-3 rounded-full bg-brand-500 hover:bg-brand-400 text-black font-bold text-sm transition mx-auto">
-          <LogIn className="w-4 h-4" /> Sign in with Google
-        </button>
-      </div>
+    <div className="min-h-screen bg-[#0a0a0a] pt-24 pb-10 px-4">
+      <AuthPanel />
     </div>
   );
 
@@ -1306,31 +2050,40 @@ const ProfilePage = () => {
     plan_to_watch: 'bg-brand-500/20 text-brand-400',
     dropped: 'bg-red-500/20 text-red-400',
   };
+  const formatHistoryDate = (value: number) => new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(value));
+  const historyLabel = (item: WatchHistoryItem) =>
+    item.mediaType === 'tv' && item.seasonNumber && item.episodeNumber
+      ? `S${item.seasonNumber}E${item.episodeNumber}${item.episodeTitle ? `: ${item.episodeTitle}` : ''}`
+      : 'Movie';
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] pt-24 pb-16 px-4 md:px-6">
       <div className="max-w-6xl mx-auto">
         {/* Profile header */}
-        <div className="flex items-center gap-4 mb-10 p-6 rounded-2xl bg-[#111111] border border-white/5">
-          {user.photoURL
-            ? <img src={user.photoURL} alt="avatar" className="w-20 h-20 rounded-full border-2 border-brand-500/50 object-cover" />
-            : <div className="w-20 h-20 rounded-full bg-brand-500/20 border-2 border-brand-500/50 flex items-center justify-center"><User className="w-10 h-10 text-brand-400" /></div>
-          }
-          <div>
-            <h1 className="text-white font-bold text-2xl">{user.displayName}</h1>
-            <p className="text-gray-500 text-sm">{user.email}</p>
-            <div className="flex gap-4 mt-2">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4 mb-10 p-5 sm:p-6 rounded-2xl bg-[#111111] border border-white/5">
+          <img src={getUserAvatar(user)} alt="avatar" className="w-20 h-20 rounded-full border-2 border-brand-500/50 object-cover bg-brand-500/20" />
+          <div className="min-w-0 text-center sm:text-left">
+            <h1 className="text-white font-bold text-2xl truncate">{getUserDisplayName(user)}</h1>
+            <p className="text-gray-500 text-sm truncate">{user.email}</p>
+            <div className="flex justify-center sm:justify-start gap-4 mt-2">
               <span className="text-gray-400 text-sm"><span className="text-white font-bold">{watchlist.length}</span> in watchlist</span>
+              <span className="text-gray-400 text-sm"><span className="text-white font-bold">{watchHistory.length}</span> watched</span>
+              <span className="text-gray-400 text-sm"><span className="text-white font-bold">{offlineItems.length}</span> offline</span>
               <span className="text-gray-400 text-sm"><span className="text-white font-bold">{watchlist.filter(w => w.status === 'completed').length}</span> completed</span>
             </div>
           </div>
-          <button onClick={logout} className="ml-auto flex items-center gap-2 px-4 py-2 rounded-lg text-red-400 hover:text-red-300 hover:bg-red-500/5 text-sm transition border border-white/5">
+          <button onClick={logout} className="sm:ml-auto w-full sm:w-auto h-11 flex items-center justify-center gap-2 px-4 rounded-lg text-red-400 hover:text-red-300 hover:bg-red-500/5 text-sm transition border border-white/5">
             <LogOut className="w-4 h-4" /> Sign Out
           </button>
         </div>
 
         {/* Watchlist */}
-        <div id="watchlist">
+        <div id="watchlist" className="mb-10">
           <h2 className="text-white font-bold text-xl mb-6">My Watchlist</h2>
           {watchlist.length === 0 ? (
             <div className="text-center py-16 text-gray-500">
@@ -1364,6 +2117,159 @@ const ProfilePage = () => {
                     </select>
                   </div>
                   <button onClick={() => removeFromWatchlist(item.id, item.mediaType)} className="self-start p-1.5 text-gray-600 hover:text-red-400 transition rounded-lg hover:bg-red-500/5">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Watch history */}
+        <div id="history" className="mb-10">
+          <div className="flex items-center justify-between gap-3 mb-6">
+            <h2 className="text-white font-bold text-xl">Watch History</h2>
+            {watchHistory.length > 0 && (
+              <button onClick={clearWatchHistory} className="text-xs text-gray-500 hover:text-red-400 transition">
+                Clear
+              </button>
+            )}
+          </div>
+          {watchHistory.length === 0 ? (
+            <div className="text-center py-12 text-gray-500 border border-white/5 rounded-2xl bg-[#111111]">
+              <Clock className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p>No watch history yet.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {watchHistory.map(item => (
+                <div key={`${item.mediaType}-${item.id}-${item.seasonNumber ?? 0}-${item.episodeNumber ?? 0}`} className="flex gap-4 p-3 rounded-xl bg-[#111111] border border-white/5 hover:border-white/10 transition">
+                  <button onClick={() => navigate(`/${item.mediaType}/${item.id}`)} className="flex-shrink-0 w-16 aspect-[2/3] rounded-lg overflow-hidden bg-[#1e1e1e]">
+                    <LazyImage src={posterUrl(item.posterPath)} alt={item.title} className="w-full h-full" />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <button onClick={() => navigate(`/${item.mediaType}/${item.id}`)} className="text-white font-semibold text-sm hover:text-brand-400 transition truncate block text-left">
+                      {item.title}
+                    </button>
+                    <p className="text-gray-500 text-xs mt-1 truncate">{historyLabel(item)}</p>
+                    <p className="text-gray-600 text-xs mt-1">{formatHistoryDate(item.watchedAt)}</p>
+                  </div>
+                  <button onClick={() => removeFromWatchHistory(item)} className="self-start p-1.5 text-gray-600 hover:text-red-400 transition rounded-lg hover:bg-red-500/5">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Downloads */}
+        <div id="downloads">
+          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mb-6">
+            <div>
+              <h2 className="text-white font-bold text-xl">Downloads</h2>
+              <p className="text-gray-500 text-sm mt-1">{offlineItems.length} saved offline</p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="video/*,.mp4,.webm,.m4v,.mov,.mkv"
+                multiple
+                className="hidden"
+                onChange={e => void importOfflineFiles(e.target.files)}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={offlineSaving}
+                className="h-11 px-4 rounded-lg bg-brand-500 text-black font-bold text-sm hover:bg-brand-400 transition flex items-center justify-center gap-2 disabled:opacity-60"
+              >
+                {offlineSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                Import Video
+              </button>
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-[1fr_auto] gap-2 mb-4">
+            <input
+              value={directTitle}
+              onChange={e => setDirectTitle(e.target.value)}
+              placeholder="Title"
+              className="h-11 rounded-lg bg-[#111111] border border-white/10 px-3 text-white text-sm outline-none focus:border-brand-500/50"
+            />
+            <div className="grid sm:grid-cols-[1fr_auto] gap-2">
+              <input
+                value={directUrl}
+                onChange={e => setDirectUrl(e.target.value)}
+                placeholder="Direct video URL"
+                className="h-11 rounded-lg bg-[#111111] border border-white/10 px-3 text-white text-sm outline-none focus:border-brand-500/50"
+              />
+              <button
+                onClick={() => void saveDirectOfflineUrl()}
+                disabled={offlineSaving || !directUrl.trim()}
+                className="h-11 px-4 rounded-lg bg-white/8 border border-white/10 text-white font-semibold text-sm hover:bg-white/15 transition flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <Download className="w-4 h-4" />
+                Save
+              </button>
+            </div>
+          </div>
+
+          {offlineError && (
+            <div className="mb-4 text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+              {offlineError}
+            </div>
+          )}
+
+          {offlinePlayer && (
+            <div className="mb-4 rounded-2xl overflow-hidden border border-white/10 bg-black">
+              <div className="flex items-center justify-between gap-3 px-4 py-2 bg-[#141414] border-b border-white/5">
+                <span className="text-white text-sm font-semibold truncate">{offlinePlayer.item.title}</span>
+                <button onClick={() => setOfflinePlayer(null)} className="text-gray-400 hover:text-white transition">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
+                <video src={offlinePlayer.url} className="absolute inset-0 w-full h-full bg-black" controls playsInline autoPlay />
+              </div>
+            </div>
+          )}
+
+          {offlineLoading ? (
+            <div className="text-center py-12 text-gray-500 border border-white/5 rounded-2xl bg-[#111111]">
+              <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin text-brand-400" />
+              <p>Loading offline videos...</p>
+            </div>
+          ) : offlineItems.length === 0 ? (
+            <div className="text-center py-12 text-gray-500 border border-white/5 rounded-2xl bg-[#111111]">
+              <Download className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p>No downloaded titles.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {offlineItems.map(item => (
+                <div key={item.id} className="flex gap-3 p-3 rounded-xl bg-[#111111] border border-white/5 hover:border-white/10 transition">
+                  <button
+                    onClick={() => void playOfflineItem(item)}
+                    className="flex-shrink-0 w-16 aspect-video rounded-lg bg-brand-500/10 border border-brand-500/20 flex items-center justify-center text-brand-400"
+                  >
+                    <Play className="w-5 h-5 fill-current" />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <button onClick={() => void playOfflineItem(item)} className="text-white font-semibold text-sm hover:text-brand-400 transition truncate block text-left">
+                      {item.title}
+                    </button>
+                    <p className="text-gray-500 text-xs mt-1 truncate">{item.fileName}</p>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      <span className="text-gray-600 text-xs">{formatBytes(item.size)}</span>
+                      <span className="text-gray-700 text-xs">|</span>
+                      <span className="text-gray-600 text-xs">{new Date(item.createdAt).toLocaleDateString()}</span>
+                      <span className="px-2 py-0.5 rounded-full bg-white/5 text-gray-500 text-[11px]">
+                        {item.source === 'local_file' ? 'File' : 'URL'}
+                      </span>
+                    </div>
+                  </div>
+                  <button onClick={() => void removeOfflineItem(item)} className="self-start p-1.5 text-gray-600 hover:text-red-400 transition rounded-lg hover:bg-red-500/5">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
@@ -1484,6 +2390,8 @@ const AppContent = () => {
         <Route path="/search" element={<SearchPage />} />
         <Route path="/discover/:category" element={<DiscoverPage />} />
         <Route path="/discover/:category/:sub" element={<DiscoverPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/auth/action" element={<AuthActionPage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/about" element={<AboutPage />} />
         <Route path="*" element={

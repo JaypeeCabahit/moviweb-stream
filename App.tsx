@@ -9,7 +9,7 @@ import {
 import { confirmPasswordReset, verifyPasswordResetCode } from 'firebase/auth';
 import {
   Search, Home, Tv, Film, Star, Play, Plus, Check, LogIn, LogOut, User,
-  Menu, X, ChevronLeft, ChevronRight, Info, Bookmark, Clock, TrendingUp,
+  Menu, X, ChevronLeft, ChevronRight, ChevronDown, Info, Bookmark, Clock, TrendingUp,
   Award, Calendar, Flame, Zap, Settings, Globe, Heart, Eye, EyeOff,
   Mail, Lock, AlertCircle, Database, Loader2, ShieldCheck, Download,
 } from 'lucide-react';
@@ -1383,6 +1383,9 @@ const TVDetailPage = () => {
   const [trailerKey, setTrailerKey] = useState<string | null>(null);
   const [providerIdx, setProviderIdx] = useState(0);
   const [scrapedStream, setScrapedStream] = useState<ScrapedStream | null | 'loading'>(null);
+  const [seasonOpen, setSeasonOpen] = useState(false);
+  const seasonBtnRef = useRef<HTMLButtonElement>(null);
+  const seasonListRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -1409,6 +1412,27 @@ const TVDetailPage = () => {
       setSeasonLoading(false);
     });
   }, [id, selectedSeason]);
+
+  // Close season dropdown when clicking/tapping outside
+  useEffect(() => {
+    if (!seasonOpen) return;
+    const handler = (e: MouseEvent | TouchEvent) => {
+      if (!(e.target as Element).closest('[data-season-picker]')) setSeasonOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('touchstart', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('touchstart', handler);
+    };
+  }, [seasonOpen]);
+
+  // Auto-focus selected season option when dropdown opens (TV D-pad support)
+  useEffect(() => {
+    if (!seasonOpen || !seasonListRef.current) return;
+    const sel = seasonListRef.current.querySelector('[aria-selected="true"]') as HTMLElement | null;
+    sel?.focus();
+  }, [seasonOpen]);
 
   useEffect(() => {
     if (!playing || !show || trailerKey) return;
@@ -1570,15 +1594,52 @@ const TVDetailPage = () => {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-white font-bold text-xl">Episodes</h2>
             {seasons.length > 0 && (
-              <select
-                value={selectedSeason}
-                onChange={e => { setSelectedSeason(Number(e.target.value)); setSelectedEp(null); }}
-                className="bg-[#1a1a1a] border border-white/10 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-brand-500/50"
-              >
-                {seasons.map(s => (
-                  <option key={s.season_number} value={s.season_number}>{s.name}</option>
-                ))}
-              </select>
+              <div className="relative" data-season-picker="">
+                <button
+                  ref={seasonBtnRef}
+                  onClick={() => setSeasonOpen(o => !o)}
+                  onKeyDown={e => {
+                    if (e.key === 'ArrowDown') { e.preventDefault(); setSeasonOpen(true); }
+                    if (e.key === 'Escape') setSeasonOpen(false);
+                  }}
+                  aria-haspopup="listbox"
+                  aria-expanded={seasonOpen}
+                  className="flex items-center gap-2 bg-[#1a1a1a] border border-white/10 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/50 min-w-[130px] justify-between"
+                >
+                  <span>{seasons.find(s => s.season_number === selectedSeason)?.name ?? `Season ${selectedSeason}`}</span>
+                  <ChevronDown className={`w-4 h-4 flex-shrink-0 transition-transform ${seasonOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {seasonOpen && (
+                  <div
+                    ref={seasonListRef}
+                    role="listbox"
+                    aria-label="Select season"
+                    className="absolute right-0 top-full mt-1 bg-[#1a1a1a] border border-white/10 rounded-xl overflow-hidden z-50 shadow-2xl min-w-[160px] max-h-72 overflow-y-auto custom-scrollbar"
+                  >
+                    {seasons.map((s, idx) => (
+                      <button
+                        key={s.season_number}
+                        role="option"
+                        aria-selected={s.season_number === selectedSeason}
+                        data-idx={idx}
+                        onClick={() => { setSelectedSeason(s.season_number); setSelectedEp(null); setSeasonOpen(false); seasonBtnRef.current?.focus(); }}
+                        onKeyDown={e => {
+                          if (e.key === 'ArrowDown') { e.preventDefault(); (seasonListRef.current?.querySelector(`[data-idx="${idx + 1}"]`) as HTMLElement | null)?.focus(); }
+                          else if (e.key === 'ArrowUp') { e.preventDefault(); if (idx === 0) { setSeasonOpen(false); seasonBtnRef.current?.focus(); } else { (seasonListRef.current?.querySelector(`[data-idx="${idx - 1}"]`) as HTMLElement | null)?.focus(); } }
+                          else if (e.key === 'Escape') { setSeasonOpen(false); seasonBtnRef.current?.focus(); }
+                        }}
+                        className={`w-full text-left px-4 py-3 text-sm transition focus:outline-none focus:bg-white/10 ${
+                          s.season_number === selectedSeason
+                            ? 'bg-brand-500/20 text-brand-400 font-semibold'
+                            : 'text-white hover:bg-white/10'
+                        }`}
+                      >
+                        {s.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
@@ -1590,6 +1651,10 @@ const TVDetailPage = () => {
                   <button
                     key={ep.id}
                     onClick={() => playEpisode(ep)}
+                    onKeyDown={e => {
+                      if (e.key === 'ArrowDown') { e.preventDefault(); (e.currentTarget.nextElementSibling as HTMLElement | null)?.focus(); }
+                      else if (e.key === 'ArrowUp') { e.preventDefault(); (e.currentTarget.previousElementSibling as HTMLElement | null)?.focus(); }
+                    }}
                     className={`w-full flex gap-3 p-3 rounded-xl text-left transition border ${
                       isActive
                         ? 'bg-brand-500/10 border-brand-500/40'
